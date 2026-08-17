@@ -126,11 +126,12 @@ pub struct CleanupConfig {
     pub auto_cleanup_enabled: bool,
     pub export_before_cleanup: bool,
     pub retention_days: u32,
+    pub export_retention: u32,
 }
 
 impl Default for CleanupConfig {
     fn default() -> Self {
-        Self { auto_cleanup_enabled: true, export_before_cleanup: true, retention_days: 30 }
+        Self { auto_cleanup_enabled: true, export_before_cleanup: true, retention_days: 30, export_retention: 5 }
     }
 }
 
@@ -160,6 +161,9 @@ impl AppConfig {
     pub fn validate(&self) -> Result<()> {
         if self.cleanup.retention_days == 0 {
             return Err(AppError::configuration("cleanup.retention_days must be at least 1"));
+        }
+        if self.cleanup.export_retention == 0 {
+            return Err(AppError::configuration("cleanup.export_retention must be at least 1"));
         }
         Ok(())
     }
@@ -369,6 +373,9 @@ fn field_comment(section: &str, line: &str) -> Option<&'static str> {
         ("cleanup", 2, "retention_days") => {
             Some("Number of days to retain session data (older data will be auto-cleaned)")
         }
+        ("cleanup", 2, "export_retention") => {
+            Some("Number of pre-cleanup export files to keep (older exports are deleted)")
+        }
         ("database", 2, "path") => Some("Path to SQLite database file"),
         ("logging", 2, "level") => Some("Log level (DEBUG, INFO, WARNING, ERROR, CRITICAL)"),
         ("logging", 2, "path") => Some("Path to log file"),
@@ -452,8 +459,10 @@ mod tests {
         let invalid = directory.path().join("invalid.yaml");
         fs::write(&malformed, "cleanup: [").unwrap();
         fs::write(&invalid, "cleanup:\n  retention_days: 0\nnotification:\n  threshold_seconds: 99\n").unwrap();
+        let no_exports = directory.path().join("no-exports.yaml");
+        fs::write(&no_exports, "cleanup:\n  export_retention: 0\nnotification:\n  threshold_seconds: 99\n").unwrap();
 
-        for path in [malformed, invalid] {
+        for path in [malformed, invalid, no_exports] {
             let loaded = ConfigLoader::new(path).load_report();
             assert_eq!(loaded.source, ConfigSource::Defaults);
             assert!(loaded.warning.is_some());
@@ -476,6 +485,7 @@ mod tests {
         let text = fs::read_to_string(&path).unwrap();
 
         assert!(text.contains("retention_days: 30  # Number of days"));
+        assert!(text.contains("export_retention: 5  # Number of pre-cleanup export files"));
         assert!(text.contains("level: DEBUG  # Log level"));
         assert!(text.contains("path: /tmp/custom.db  # Path to SQLite database file"));
         assert!(text.contains("path: /tmp/custom.log  # Path to log file"));

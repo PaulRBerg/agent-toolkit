@@ -10,6 +10,8 @@
 - Documentation updates for Codex CLI support
 - Claude Code `StopFailure` hook and `ai-notify event stop-failure` handler
 - Codex profile-aware integration checks (`ai-notify check --profile NAME`)
+- `cleanup.export_retention` (default 5) caps the pre-cleanup export directory, deleting older
+  exports after a successful new one
 
 ### Changed
 

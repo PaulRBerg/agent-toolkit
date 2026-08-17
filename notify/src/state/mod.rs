@@ -21,6 +21,8 @@ use crate::{
 
 const SCHEMA_VERSION: i32 = 1;
 const AUTO_CLEANUP_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
+const EXPORT_PREFIX: &str = "sessions_before_cleanup_";
+const EXPORT_SUFFIX: &str = ".json";
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS sessions (
@@ -81,6 +83,7 @@ pub struct CleanupStats {
     pub rows_deleted: usize,
     pub space_freed_kb: u64,
     pub rows_exported: usize,
+    pub exports_removed: usize,
 }
 
 /// Synchronous access to the schema-v1 SQLite session database.
@@ -90,6 +93,7 @@ pub struct SessionStore {
     auto_cleanup_enabled: bool,
     export_before_cleanup: bool,
     retention_days: u32,
+    export_retention: u32,
 }
 
 /// Compatibility name matching the former Python implementation.
@@ -109,6 +113,7 @@ impl SessionStore {
             auto_cleanup_enabled: config.cleanup.auto_cleanup_enabled,
             export_before_cleanup: config.cleanup.export_before_cleanup,
             retention_days: config.cleanup.retention_days,
+            export_retention: config.cleanup.export_retention,
         };
         store.initialize();
         store
@@ -121,6 +126,7 @@ impl SessionStore {
             auto_cleanup_enabled: true,
             export_before_cleanup: true,
             retention_days: 30,
+            export_retention: 5,
         };
         store.initialize();
         store
@@ -283,9 +289,15 @@ impl SessionStore {
     pub fn cleanup_old_data(&self, retention_days: u32, export_before: bool) -> CleanupStats {
         let mut stats = CleanupStats::default();
         if export_before {
+            let directory = export_dir();
             let timestamp = Local::now().format("%Y%m%d_%H%M%S");
-            let path = export_dir().join(format!("sessions_before_cleanup_{timestamp}.json"));
+            let path = directory.join(format!("{EXPORT_PREFIX}{timestamp}{EXPORT_SUFFIX}"));
             stats.rows_exported = self.export_to_json(&path, None);
+            // Prune only once the new export is on disk, so a failed export never removes the
+            // last good backup.
+            if path.exists() {
+                stats.exports_removed = prune_exports_at(&directory, self.export_retention);
+            }
         }
 
         let size_before = file_size(&self.database_path);
@@ -456,6 +468,49 @@ pub fn mark_cleanup_done() {
     mark_cleanup_done_at(&cleanup_marker_path());
 }
 
+/// Deletes all but the `keep` most recent pre-cleanup exports in `directory`.
+///
+/// Exports are ordered by their `%Y%m%d_%H%M%S` filename stamp, which sorts lexicographically in
+/// chronological order and, unlike mtime, survives copying or restoring the directory. `keep` is
+/// floored at 1 so a misconfigured value can never remove every backup.
+pub fn prune_exports_at(directory: &Path, keep: u32) -> usize {
+    let keep = keep.max(1) as usize;
+    let Ok(entries) = fs::read_dir(directory) else {
+        return 0;
+    };
+
+    let mut exports: Vec<PathBuf> =
+        entries.filter_map(|entry| entry.ok()).map(|entry| entry.path()).filter(|path| is_export_file(path)).collect();
+    if exports.len() <= keep {
+        return 0;
+    }
+    exports.sort_unstable();
+
+    let stale = exports.len() - keep;
+    let removed = exports
+        .iter()
+        .take(stale)
+        .filter(|path| match fs::remove_file(path) {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(%error, path = %path.display(), "failed to remove old session export");
+                false
+            }
+        })
+        .count();
+    if removed > 0 {
+        tracing::info!(removed, kept = keep, "pruned old session exports");
+    }
+    removed
+}
+
+fn is_export_file(path: &Path) -> bool {
+    path.is_file() &&
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(EXPORT_PREFIX) && name.ends_with(EXPORT_SUFFIX))
+}
+
 /// Path-injectable form of [`mark_cleanup_done`] for tests and embedders.
 pub fn mark_cleanup_done_at(marker_path: &Path) {
     let parent = marker_path.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or(Path::new("."));
@@ -554,5 +609,83 @@ mod tests {
         mark_cleanup_done_at(&marker);
         assert!(!should_run_auto_cleanup_at(&marker));
         assert!(marker.exists());
+    }
+
+    fn write_export(directory: &Path, stamp: &str) -> PathBuf {
+        let path = directory.join(format!("{EXPORT_PREFIX}{stamp}{EXPORT_SUFFIX}"));
+        fs::write(&path, "[]").unwrap();
+        path
+    }
+
+    #[test]
+    fn prunes_all_but_the_newest_exports() {
+        let directory = tempdir().unwrap();
+        let stamps = ["20260101_010101", "20260102_010101", "20260103_010101", "20260104_010101"];
+        let paths: Vec<PathBuf> = stamps.iter().map(|stamp| write_export(directory.path(), stamp)).collect();
+
+        assert_eq!(prune_exports_at(directory.path(), 2), 2);
+        assert!(!paths[0].exists());
+        assert!(!paths[1].exists());
+        assert!(paths[2].exists());
+        assert!(paths[3].exists());
+    }
+
+    #[test]
+    fn pruning_keeps_everything_when_under_the_cap_and_is_idempotent() {
+        let directory = tempdir().unwrap();
+        write_export(directory.path(), "20260101_010101");
+        write_export(directory.path(), "20260102_010101");
+
+        assert_eq!(prune_exports_at(directory.path(), 5), 0);
+        assert_eq!(prune_exports_at(directory.path(), 2), 0);
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 2);
+    }
+
+    #[test]
+    fn pruning_ignores_unrelated_files_and_never_empties_the_directory() {
+        let directory = tempdir().unwrap();
+        let unrelated = directory.path().join("notes.json");
+        fs::write(&unrelated, "{}").unwrap();
+        let nested = directory.path().join(format!("{EXPORT_PREFIX}20260101_010101{EXPORT_SUFFIX}"));
+        fs::create_dir(&nested).unwrap();
+        let newest = write_export(directory.path(), "20260105_010101");
+        write_export(directory.path(), "20260104_010101");
+
+        // `keep` is floored at 1, so even 0 leaves the most recent export in place.
+        assert_eq!(prune_exports_at(directory.path(), 0), 1);
+        assert!(newest.exists());
+        assert!(unrelated.exists());
+        assert!(nested.is_dir());
+    }
+
+    #[test]
+    fn cleanup_prunes_exports_after_writing_a_new_one() {
+        let directory = tempdir().unwrap();
+        let exports = directory.path().join("exports");
+        fs::create_dir(&exports).unwrap();
+        for stamp in ["20260101_010101", "20260102_010101", "20260103_010101"] {
+            write_export(&exports, stamp);
+        }
+
+        let store = SessionStore::from_database_path(directory.path().join("sessions.db"));
+        store.track_prompt("session", "prompt", "/tmp");
+        store.export_to_json(&exports.join(format!("{EXPORT_PREFIX}20260104_010101{EXPORT_SUFFIX}")), None);
+
+        assert_eq!(prune_exports_at(&exports, 2), 2);
+        let remaining: Vec<String> = {
+            let mut names: Vec<String> = fs::read_dir(&exports)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .collect();
+            names.sort();
+            names
+        };
+        assert_eq!(
+            remaining,
+            vec![
+                format!("{EXPORT_PREFIX}20260103_010101{EXPORT_SUFFIX}"),
+                format!("{EXPORT_PREFIX}20260104_010101{EXPORT_SUFFIX}"),
+            ]
+        );
     }
 }
