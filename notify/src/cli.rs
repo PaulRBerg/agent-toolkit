@@ -212,6 +212,7 @@ fn run_config(command: ConfigCommand, loader: &ConfigLoader, config: &AppConfig)
             println!("  Retention Days: {} days", config.cleanup.retention_days);
             println!("  Auto-cleanup Enabled: {}", if config.cleanup.auto_cleanup_enabled { "Yes" } else { "No" });
             println!("  Export Before Cleanup: {}", if config.cleanup.export_before_cleanup { "Yes" } else { "No" });
+            println!("  Export Retention: {} files", config.cleanup.export_retention);
             println!("  Log Level: {}", config.logging.level);
             println!("  Log Path: {}", display_path(&config.logging.path));
             println!("\nConfig file: {}", display_path(loader.path()));
@@ -432,6 +433,9 @@ fn cleanup(days: Option<u32>, dry_run: bool, no_export: bool, config: &AppConfig
         println!("  Sessions exported: {}", stats.rows_exported);
         if stats.rows_exported > 0 {
             println!("  Exported data saved to: {}", display_path(&config::export_dir()));
+        }
+        if stats.exports_removed > 0 {
+            println!("  Old exports removed: {}", stats.exports_removed);
         }
     }
     Ok(())

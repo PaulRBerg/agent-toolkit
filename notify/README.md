@@ -92,6 +92,7 @@ cleanup:
   auto_cleanup_enabled: true # Enable automatic cleanup of old data
   export_before_cleanup: true # Export data before cleanup
   retention_days: 30 # Number of days to retain session data (older data will be auto-cleaned)
+  export_retention: 5 # Number of pre-cleanup export files to keep (older exports are deleted)
 
 database:
   path: ~/.config/ai-notify/ai-notify.db # Path to SQLite database file
