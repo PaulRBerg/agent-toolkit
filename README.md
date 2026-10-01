@@ -1,13 +1,4 @@
-# Agent Toolkit
+# Agent Toolkit (moved)
 
-Agent-oriented command-line tools and local applications for shared-working-tree coordination, notifications, commits, skill catalogs, and task handoffs.
-
-- [ai-commit](commit/): prepare and commit immutable Git snapshots safely in shared working trees.
-- [ai-coord](coord/): coordinate parallel Codex and Claude Code agents.
-- [ai-handoff](handoff/): create and archive agent task handoffs.
-- [ai-notify](notify/): deliver desktop notifications for Claude Code and Codex CLI.
-- [ai-skillet](skillet/): inspect and maintain agent-skill catalogs.
-- [Coordination dashboard](apps/coord-dashboard/): local live view of ai-coord state, running at [http://localhost:4173](http://localhost:4173).
-- [AI Handoffs](apps/handoffs/): local, read-only task-handoff viewer, running at [http://localhost:7777](http://localhost:7777).
-
-For contribution guidance and validation, see [AGENTS.md](AGENTS.md).
+This repository moved to [PaulRBerg/agent-skills](https://github.com/PaulRBerg/agent-skills/tree/main/toolkit), under
+`toolkit/`, with its full history preserved there.

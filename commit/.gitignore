@@ -1,6 +1,0 @@
-# Rust build output
-target/
-
-# Editor recovery files
-**/*.rs.bk
-

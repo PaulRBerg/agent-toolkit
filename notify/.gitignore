@@ -1,7 +1,0 @@
-# Rust build output
-/target/
-
-# Local files
-.env
-*.log
-.DS_Store
